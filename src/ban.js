@@ -36,34 +36,51 @@
   // Also collects the username from the page's own request URLs (e.g. /user/<name>/...),
   // so we don't have to call the rate-limited /v1/me.
   const USER_URL_RE = /\/(?:users?|profile|user-profile-view\/v3\/profile)\/([A-Za-z0-9._~%-]{2,})(?:[/?]|$)/;
-  const sniffAuth = (timeoutMs) => new Promise((resolve) => {
-    const orig = window.fetch;
+  const sniffAuth = (timeoutMs, nudge) => new Promise((resolve) => {
+    const origFetch = window.fetch;
+    const XP = XMLHttpRequest.prototype;
+    const origOpen = XP.open, origSet = XP.setRequestHeader, origSend = XP.send;
     let done = false;
     let auth = null;
     let user = null;
+    let nFetch = 0, nXhr = 0, nudged = false;
     const finish = () => {
       if (done) return;
       done = true;
-      window.fetch = orig;
+      window.fetch = origFetch;
+      XP.open = origOpen; XP.setRequestHeader = origSet; XP.send = origSend;
+      log('sniff done: fetch calls', nFetch, 'xhr calls', nXhr, 'auth', !!auth);
       resolve(auth ? { token: auth.token, clientToken: auth.clientToken, username: user } : null);
     };
+    const consider = (a, ct) => {
+      if (a && ct && !auth && /^Bearer\s+/i.test(a)) {
+        auth = { token: a.replace(/^Bearer\s+/i, ''), clientToken: ct };
+        setTimeout(finish, 3000);
+      }
+    };
+    const seeUrl = (url) => {
+      const m = USER_URL_RE.exec(String(url || '').replace(/^https?:\/\/[^/]+/, ''));
+      if (m && !/^(me|self|v\d+)$/i.test(m[1])) { user = decodeURIComponent(m[1]); log('username from request url:', user); }
+      if (auth && user) finish();
+    };
     window.fetch = function (input, init) {
+      nFetch++;
       try {
         const src = (init && init.headers) || (input && input.headers) || {};
         const h = new Headers(src);
-        const a = h.get('authorization');
-        const ct = h.get('client-token');
-        if (a && ct && !auth) {
-          auth = { token: a.replace(/^Bearer\s+/i, ''), clientToken: ct };
-          setTimeout(finish, 3000); // grace period to also catch a URL with the username
-        }
-        const url = typeof input === 'string' ? input : (input && input.url) || '';
-        const m = USER_URL_RE.exec(url.replace(/^https?:\/\/[^/]+/, ''));
-        if (m && !/^(me|self|v\d+)$/i.test(m[1])) { user = decodeURIComponent(m[1]); log('username from request url:', user); }
-        if (auth && user) finish();
+        consider(h.get('authorization'), h.get('client-token'));
+        seeUrl(typeof input === 'string' ? input : (input && input.url) || '');
       } catch (e) {}
-      return orig.apply(this, arguments);
+      return origFetch.apply(this, arguments);
     };
+    XP.open = function (method, url) { this.__brH = {}; this.__brU = url; return origOpen.apply(this, arguments); };
+    XP.setRequestHeader = function (k, v) { try { if (this.__brH) this.__brH[String(k).toLowerCase()] = v; } catch (e) {} return origSet.apply(this, arguments); };
+    XP.send = function () {
+      nXhr++;
+      try { consider(this.__brH && this.__brH.authorization, this.__brH && this.__brH['client-token']); seeUrl(this.__brU); } catch (e) {}
+      return origSend.apply(this, arguments);
+    };
+    if (nudge) setTimeout(() => { if (!auth && !done) { nudged = true; log('no auth yet, nudging page'); try { nudge(); } catch (e) {} } }, 2500);
     setTimeout(finish, timeoutMs);
   });
 
@@ -160,7 +177,7 @@
   let clientToken = null;
   try {
     st.textContent = 'Чекаю на автентифікацію сторінки...';
-    const sniffed = await sniffAuth(8000);
+    const sniffed = await sniffAuth(15000, () => { history.pushState({}, '', '/artist/' + IDS[0]); window.dispatchEvent(new PopStateEvent('popstate', { state: {} })); });
     if (!sniffed) throw new Error('no auth captured in time');
     token = sniffed.token;
     clientToken = sniffed.clientToken;
