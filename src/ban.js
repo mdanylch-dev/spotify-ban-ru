@@ -58,7 +58,11 @@
         setTimeout(finish, 3000);
       }
     };
-    const seeUrl = (url) => {
+    const seeUrl = (url, body) => {
+      const q = /[?&]username=([^&#]+)/.exec(String(url || ''));
+      const bm = typeof body === 'string' && (/"username"\s*:\s*"([^"]+)"/.exec(body) || /spotify:user:([A-Za-z0-9._~%-]+)/.exec(body));
+      const direct = (q && decodeURIComponent(q[1])) || (bm && bm[1]);
+      if (direct) { user = direct; log('username from request:', user); }
       const m = USER_URL_RE.exec(String(url || '').replace(/^https?:\/\/[^/]+/, ''));
       if (m && !/^(me|self|v\d+)$/i.test(m[1])) { user = decodeURIComponent(m[1]); log('username from request url:', user); }
       if (auth && user) finish();
@@ -69,7 +73,7 @@
         const src = (init && init.headers) || (input && input.headers) || {};
         const h = new Headers(src);
         consider(h.get('authorization'), h.get('client-token'));
-        seeUrl(typeof input === 'string' ? input : (input && input.url) || '');
+        seeUrl(typeof input === 'string' ? input : (input && input.url) || '', init && init.body);
       } catch (e) {}
       return origFetch.apply(this, arguments);
     };
@@ -77,12 +81,24 @@
     XP.setRequestHeader = function (k, v) { try { if (this.__brH) this.__brH[String(k).toLowerCase()] = v; } catch (e) {} return origSet.apply(this, arguments); };
     XP.send = function () {
       nXhr++;
-      try { consider(this.__brH && this.__brH.authorization, this.__brH && this.__brH['client-token']); seeUrl(this.__brU); } catch (e) {}
+      try { consider(this.__brH && this.__brH.authorization, this.__brH && this.__brH['client-token']); seeUrl(this.__brU, arguments[0]); } catch (e) {}
       return origSend.apply(this, arguments);
     };
     if (nudge) setTimeout(() => { if (!auth && !done) { nudged = true; log('no auth yet, nudging page'); try { nudge(); } catch (e) {} } }, 2500);
     setTimeout(finish, timeoutMs);
   });
+
+  const usernameFromStorage = () => {
+    for (const st of [localStorage, sessionStorage]) {
+      try {
+        for (let i = 0; i < st.length; i++) {
+          const m = /spotify:user:([A-Za-z0-9._~%-]{2,})/.exec(st.getItem(st.key(i)) || '');
+          if (m && !/^(spotify|me)$/i.test(m[1])) { log('username from storage key', st.key(i)); return decodeURIComponent(m[1]); }
+        }
+      } catch (e) {}
+    }
+    return null;
+  };
 
   const usernameFromDom = () => {
     const a = document.querySelector('a[href^="/user/"]');
@@ -182,7 +198,7 @@
     token = sniffed.token;
     clientToken = sniffed.clientToken;
     try { username = localStorage.getItem(USER_KEY); } catch (e) {}
-    username = username || sniffed.username || usernameFromDom() || await getUsername(token);
+    username = username || sniffed.username || usernameFromStorage() || usernameFromDom() || await getUsername(token);
     log('auth ok via sniff, username:', username);
   } catch (e) { log('auth failed:', e && e.message); token = null; }
 
