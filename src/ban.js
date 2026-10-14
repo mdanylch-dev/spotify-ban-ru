@@ -33,27 +33,45 @@
   // Instead of minting our own token, grab a valid Authorization + client-token pair from
   // a real request the page itself is already making (it fires authenticated calls
   // constantly in the background), by briefly intercepting window.fetch.
+  // Also collects the username from the page's own request URLs (e.g. /user/<name>/...),
+  // so we don't have to call the rate-limited /v1/me.
+  const USER_URL_RE = /\/(?:users?|profile|user-profile-view\/v3\/profile)\/([A-Za-z0-9._~%-]{2,})(?:[/?]|$)/;
   const sniffAuth = (timeoutMs) => new Promise((resolve) => {
     const orig = window.fetch;
     let done = false;
-    const finish = (result) => {
+    let auth = null;
+    let user = null;
+    const finish = () => {
       if (done) return;
       done = true;
       window.fetch = orig;
-      resolve(result);
+      resolve(auth ? { token: auth.token, clientToken: auth.clientToken, username: user } : null);
     };
     window.fetch = function (input, init) {
       try {
         const src = (init && init.headers) || (input && input.headers) || {};
         const h = new Headers(src);
-        const auth = h.get('authorization');
+        const a = h.get('authorization');
         const ct = h.get('client-token');
-        if (auth && ct) finish({ token: auth.replace(/^Bearer\s+/i, ''), clientToken: ct });
+        if (a && ct && !auth) {
+          auth = { token: a.replace(/^Bearer\s+/i, ''), clientToken: ct };
+          setTimeout(finish, 3000); // grace period to also catch a URL with the username
+        }
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const m = USER_URL_RE.exec(url.replace(/^https?:\/\/[^/]+/, ''));
+        if (m && !/^(me|self|v\d+)$/i.test(m[1])) { user = decodeURIComponent(m[1]); log('username from request url:', user); }
+        if (auth && user) finish();
       } catch (e) {}
       return orig.apply(this, arguments);
     };
-    setTimeout(() => finish(null), timeoutMs);
+    setTimeout(finish, timeoutMs);
   });
+
+  const usernameFromDom = () => {
+    const a = document.querySelector('a[href^="/user/"]');
+    const m = a && /^\/user\/([^/?#]+)/.exec(a.getAttribute('href'));
+    return m ? decodeURIComponent(m[1]) : null;
+  };
 
   // /v1/me is rate-limited (429). The username never changes, so cache it and,
   // when Spotify does throttle us, wait out Retry-After instead of failing.
@@ -62,7 +80,7 @@
     try { const cached = localStorage.getItem(USER_KEY); if (cached) { log('username from cache'); return cached; } } catch (e) {}
     for (let attempt = 0; attempt < 3; attempt++) {
       const r = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + token } });
-      log('v1/me status', r.status);
+      log('v1/me status', r.status, 'retry-after:', r.headers.get('Retry-After'));
       if (r.status === 429 && attempt < 2) {
         const secs = Math.min(Math.max(parseInt(r.headers.get('Retry-After'), 10) || 5, 1), 60);
         st.textContent = 'Spotify просить зачекати ' + secs + ' с...';
@@ -146,7 +164,8 @@
     if (!sniffed) throw new Error('no auth captured in time');
     token = sniffed.token;
     clientToken = sniffed.clientToken;
-    username = await getUsername(token);
+    try { username = localStorage.getItem(USER_KEY); } catch (e) {}
+    username = username || sniffed.username || usernameFromDom() || await getUsername(token);
     log('auth ok via sniff, username:', username);
   } catch (e) { log('auth failed:', e && e.message); token = null; }
 
