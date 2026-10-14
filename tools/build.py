@@ -3,7 +3,6 @@
     python3 tools/build.py          зібрати у site/
     python3 tools/build.py --check  лише перевірити списки (для CI та PR)
 """
-import json
 import pathlib
 import re
 import sys
@@ -11,8 +10,8 @@ import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ID_RE = re.compile(r'^[A-Za-z0-9]{22}$')
-REPO_URL = 'https://github.com/RaftTone/spotify-ban-ru'
-PAGES_URL = 'https://rafttone.github.io/spotify-ban-ru'
+REPO_URL = 'https://github.com/mdanylch-dev/spotify-ban-ru'
+PAGES_URL = 'https://mdanylch-dev.github.io/spotify-ban-ru'
 LOADER = ("(async()=>{try{const r=await fetch('%s/ban.js',{cache:'no-cache'});"
           "if(!r.ok)throw new Error('HTTP '+r.status);const c=await r.text();"
           "await new(Object.getPrototypeOf(async function(){}).constructor)(c)()}"
@@ -56,11 +55,8 @@ def main():
     out = ROOT / 'site'
     (out / 'ban.js').write_text(src, encoding='utf-8')
     bookmarklet = 'javascript:' + urllib.parse.quote(src, safe="()!*'~")
-    cfg = json.loads((ROOT / 'config.json').read_text(encoding='utf-8')) if (ROOT / 'config.json').exists() else {}
-    submit_url = cfg.get('submit_url', '')
     page = (out / 'index.template.html').read_text(encoding='utf-8')
     page = (page.replace('{{COUNT}}', str(len(ids)))
-                .replace('{{SUBMIT_URL}}', json.dumps(submit_url))
                 .replace('{{REPO}}', REPO_URL)
                 .replace('{{LOADER_RAW}}', LOADER.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
                 .replace('{{LOADER}}', ('javascript:' + urllib.parse.quote(LOADER, safe="()!*'~")).replace('&', '&amp;').replace('"', '&quot;'))
