@@ -27,14 +27,18 @@
   const WRITE_URL = 'https://spclient.wg.spotify.com/collection/v2/write?market=from_token';
   const FAST_CHUNK = 50;
 
+  const log = (...a) => { try { console.log('[banRu]', ...a); } catch (e) {} };
+
   const getToken = async () => {
     const r = await fetch('https://open.spotify.com/get_access_token?reason=transport&productType=web_player', { credentials: 'include' });
+    log('get_access_token status', r.status);
     if (!r.ok) throw new Error('token HTTP ' + r.status);
     return (await r.json()).accessToken;
   };
 
   const getUsername = async (token) => {
     const r = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + token } });
+    log('v1/me status', r.status);
     if (!r.ok) throw new Error('me HTTP ' + r.status);
     return (await r.json()).id;
   };
@@ -55,6 +59,7 @@
     const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
     const ct = guessClientToken();
     if (ct) headers['client-token'] = ct;
+    log('write chunk', ids.length, 'client-token found:', !!ct);
     let r;
     try {
       r = await fetch(WRITE_URL, {
@@ -62,7 +67,9 @@
         headers,
         body: JSON.stringify({ username, set: 'artistban', items: ids.map((id) => ({ uri: 'spotify:artist:' + id })) })
       });
-    } catch (e) { return false; }
+    } catch (e) { log('write fetch threw', e && e.message); return false; }
+    log('write status', r.status);
+    if (!r.ok) { try { log('write body', await r.text()); } catch (e) {} }
     return r.ok;
   };
 
@@ -115,7 +122,8 @@
   try {
     token = await getToken();
     username = await getUsername(token);
-  } catch (e) { token = null; }
+    log('auth ok, username:', username);
+  } catch (e) { log('auth failed:', e && e.message); token = null; }
 
   const slowQueue = [];
   if (token && username) {
