@@ -29,12 +29,31 @@
 
   const log = (...a) => { try { console.log('[banRu]', ...a); } catch (e) {} };
 
-  const getToken = async () => {
-    const r = await fetch('https://open.spotify.com/get_access_token?reason=transport&productType=web_player', { credentials: 'include' });
-    log('get_access_token status', r.status);
-    if (!r.ok) throw new Error('token HTTP ' + r.status);
-    return (await r.json()).accessToken;
-  };
+  // Spotify's token-issuing endpoints are behind bot-detection (TOTP-protected /api/token).
+  // Instead of minting our own token, grab a valid Authorization + client-token pair from
+  // a real request the page itself is already making (it fires authenticated calls
+  // constantly in the background), by briefly intercepting window.fetch.
+  const sniffAuth = (timeoutMs) => new Promise((resolve) => {
+    const orig = window.fetch;
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      window.fetch = orig;
+      resolve(result);
+    };
+    window.fetch = function (input, init) {
+      try {
+        const src = (init && init.headers) || (input && input.headers) || {};
+        const h = new Headers(src);
+        const auth = h.get('authorization');
+        const ct = h.get('client-token');
+        if (auth && ct) finish({ token: auth.replace(/^Bearer\s+/i, ''), clientToken: ct });
+      } catch (e) {}
+      return orig.apply(this, arguments);
+    };
+    setTimeout(() => finish(null), timeoutMs);
+  });
 
   const getUsername = async (token) => {
     const r = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + token } });
@@ -43,23 +62,10 @@
     return (await r.json()).id;
   };
 
-  const guessClientToken = () => {
-    for (const k of ['client-token', 'clientToken']) {
-      try {
-        const v = localStorage.getItem(k);
-        if (!v) continue;
-        try { const j = JSON.parse(v); if (j && j.token) return j.token; } catch (e) {}
-        return v;
-      } catch (e) {}
-    }
-    return null;
-  };
-
-  const fastBanChunk = async (ids, token, username) => {
+  const fastBanChunk = async (ids, token, username, clientToken) => {
     const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
-    const ct = guessClientToken();
-    if (ct) headers['client-token'] = ct;
-    log('write chunk', ids.length, 'client-token found:', !!ct);
+    if (clientToken) headers['client-token'] = clientToken;
+    log('write chunk', ids.length, 'client-token present:', !!clientToken);
     let r;
     try {
       r = await fetch(WRITE_URL, {
@@ -119,10 +125,15 @@
 
   let token = null;
   let username = null;
+  let clientToken = null;
   try {
-    token = await getToken();
+    st.textContent = 'Чекаю на автентифікацію сторінки...';
+    const sniffed = await sniffAuth(8000);
+    if (!sniffed) throw new Error('no auth captured in time');
+    token = sniffed.token;
+    clientToken = sniffed.clientToken;
     username = await getUsername(token);
-    log('auth ok, username:', username);
+    log('auth ok via sniff, username:', username);
   } catch (e) { log('auth failed:', e && e.message); token = null; }
 
   const slowQueue = [];
@@ -132,7 +143,7 @@
       const chunk = todo.slice(i, i + FAST_CHUNK);
       bar.style.width = Math.round((Math.min(i + FAST_CHUNK, todo.length) / todo.length) * 50) + '%';
       st.textContent = 'Швидкий бан: ' + Math.min(i + FAST_CHUNK, todo.length) + ' з ' + todo.length + '...';
-      const ok = await fastBanChunk(chunk, token, username);
+      const ok = await fastBanChunk(chunk, token, username, clientToken);
       if (ok) {
         chunk.forEach((id) => { store[id] = 'banned'; counts.banned++; });
         save();
