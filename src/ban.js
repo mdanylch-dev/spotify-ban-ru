@@ -55,11 +55,25 @@
     setTimeout(() => finish(null), timeoutMs);
   });
 
+  // /v1/me is rate-limited (429). The username never changes, so cache it and,
+  // when Spotify does throttle us, wait out Retry-After instead of failing.
+  const USER_KEY = 'banRuUser';
   const getUsername = async (token) => {
-    const r = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + token } });
-    log('v1/me status', r.status);
-    if (!r.ok) throw new Error('me HTTP ' + r.status);
-    return (await r.json()).id;
+    try { const cached = localStorage.getItem(USER_KEY); if (cached) { log('username from cache'); return cached; } } catch (e) {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: 'Bearer ' + token } });
+      log('v1/me status', r.status);
+      if (r.status === 429 && attempt < 2) {
+        const secs = Math.min(Math.max(parseInt(r.headers.get('Retry-After'), 10) || 5, 1), 60);
+        st.textContent = 'Spotify просить зачекати ' + secs + ' с...';
+        await wait(secs * 1000 + 500);
+        continue;
+      }
+      if (!r.ok) throw new Error('me HTTP ' + r.status);
+      const id = (await r.json()).id;
+      try { localStorage.setItem(USER_KEY, id); } catch (e) {}
+      return id;
+    }
   };
 
   const fastBanChunk = async (ids, token, username, clientToken) => {
